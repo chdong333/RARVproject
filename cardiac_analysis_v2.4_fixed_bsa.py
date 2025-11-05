@@ -1,26 +1,28 @@
 # -*- coding: utf-8 -*-
 """
-右/左心系统功能指标（CT 多期体积 → 拟合曲线）- 改进版V2.2 (完整左右心输出)
+右/左心系统功能指标（CT 多期体积 → 拟合曲线）- 改进版V2.4 (修复BSA计算)
 
-改进内容（相比V2.1）:
-- ✅ 添加完整的右心功能计算和QC标记
-- ✅ 改进右心ED/ES识别的稳健性
-- ✅ 完整的右心E/A波检测
-- ✅ 右心VpreA多策略定位
-- ✅ 左右心对比参数计算
-- ✅ 统一的QC系统
-- ✅ 四腔完整输出
+改进内容（相比V2.3）:
+- ✅ 修复BSA文件列名识别（"high" → 身高米, "weight" → 体重kg）
+- ✅ 修复BSA计算公式（身高已为米，不需转换）
+- ✅ 确保indexed文件正常输出
+- ✅ 增强BSA列名匹配
 
-V2.1继承的修复：
-- ✅ 周期样条边界条件修复（机器精度）
+BSA计算公式:
+  BSA(m²) = √(身高(m) × 体重(kg) / 3600)
+  
+V2.3继承的功能：
+- ✅ 周期样条边界修复
 - ✅ 动态E/A窗口调整
 - ✅ 多策略VpreA定位
-- ✅ 完整的质量控制系统
+- ✅ 完整的左右心功能计算
+- ✅ 统一的QC质量控制系统
 
 输出文件:
-- left_heart_metrics_v2.csv + 右心数据
-- left_heart_metrics_indexed_v2.csv + 右心指数化
-- right_heart_metrics_v2.csv (新增)
+- left_heart_metrics_v2.csv
+- right_heart_metrics_v2.csv
+- left_heart_metrics_indexed_v2.csv ✅ 完全修复
+- right_heart_metrics_indexed_v2.csv ✅ 完全修复
 - quality_control_report_v2.json
 - chamber_completeness_qc.csv
 """
@@ -34,8 +36,8 @@ from scipy.interpolate import CubicSpline
 from scipy.signal import savgol_filter, find_peaks
 
 # ======== 路径（按需修改） ========
-INPUT_XLSX = r"D:\数据资料\联影电影数据\ex3.XLSX"
-BSA_XLSX   = r"D:\数据资料\联影电影数据\BSA3.xlsx"
+INPUT_XLSX = r"D:\数据资料\联影电影数据\rarvproj\ex3.XLSX"
+BSA_XLSX   = r"D:\数据资料\联影电影数据\rarvproj\BSA3.xlsx"
 
 # ======== 参数 ========
 UPSAMPLE_POINTS = 4000
@@ -159,7 +161,7 @@ def resample_with_periodic_spline(vols: np.ndarray,
         qc.add_warning('WARNING', f'体积振幅异常：ED={ed_val:.1f}, ES={es_val:.1f}')
         qc.add_flag('ED_ES', 'amplitude_warning', True)
 
-    # ===== 修复：严格的周期边界检查 =====
+    # 修复：严格的周期边界检查
     first_val = vols[0]
     last_val = vols[-1]
     is_periodic = np.isclose(first_val, last_val, rtol=1e-10, atol=1e-12)
@@ -332,17 +334,11 @@ def find_eject_windowed_v2(drv: np.ndarray, idx_ED: int, idx_ES: int, M: int,
     
     return best_idx, qc
 
-# ========== 改进的双心室计算函数 ==========
-
 def compute_cardiac_metrics_v2(patient_id: str,
                                chamber_vols: Dict[str, np.ndarray],
                                phase_names: List[str],
                                chamber_type: str = "left") -> Tuple[Dict, CardiacAnalysisQC]:
-    """
-    统一的左右心功能指标计算（V2.2 - 支持左右心）
-    
-    chamber_type: "left" 或 "right"
-    """
+    """统一的左右心功能指标计算"""
     qc_main = CardiacAnalysisQC(patient_id)
     chamber_pair = {"left": ("LA", "LV"), "right": ("RA", "RV")}[chamber_type]
     atrium_name, ventricle_name = chamber_pair
@@ -352,7 +348,6 @@ def compute_cardiac_metrics_v2(patient_id: str,
         "N_phases": len(phase_names)
     }
     
-    # 定义输出字段
     output_fields = [
         f"{ventricle_name}_EDV", f"{ventricle_name}_ESV", f"{ventricle_name}_SV", f"{ventricle_name}EF_%",
         f"{ventricle_name}_max_eject_vel_ml_perc", f"t_{ventricle_name}_max_eject_%",
@@ -371,7 +366,6 @@ def compute_cardiac_metrics_v2(patient_id: str,
             res[k] = np.nan
         return res, qc_main
 
-    # 重采样
     t_at, y_at, d_at, qc_at = resample_with_periodic_spline(chamber_vols[atrium_name])
     t_vt, y_vt, d_vt, qc_vt = resample_with_periodic_spline(chamber_vols[ventricle_name])
     M = len(t_vt)
@@ -379,7 +373,6 @@ def compute_cardiac_metrics_v2(patient_id: str,
     qc_main.add_flag('resampling', atrium_name, qc_at.to_dict())
     qc_main.add_flag('resampling', ventricle_name, qc_vt.to_dict())
 
-    # 心室参数
     i_vt_ED = int(np.argmax(y_vt))
     i_vt_ES = int(np.argmin(y_vt))
     vt_EDV, vt_ESV = float(y_vt[i_vt_ED]), float(y_vt[i_vt_ES])
@@ -390,7 +383,6 @@ def compute_cardiac_metrics_v2(patient_id: str,
         qc_main.add_warning('WARNING', f'{ventricle_name}体积极端：EDV={vt_EDV:.1f}, ESV={vt_ESV:.1f}')
         qc_main.add_flag('ED_ES', 'extreme_volume_warning', True)
 
-    # 射出速率
     i_vt_eject, qc_eject = find_eject_windowed_v2(d_vt, i_vt_ED, i_vt_ES, M)
     if i_vt_eject is not None:
         vt_max_eject_vel = float(d_vt[i_vt_eject]) / 100.0
@@ -405,7 +397,6 @@ def compute_cardiac_metrics_v2(patient_id: str,
     
     qc_main.add_flag('eject_detection', ventricle_name, qc_eject.to_dict())
 
-    # E/A波
     i_E, i_A, qc_ea = find_EA_windowed_v2(d_vt, i_vt_ES, i_vt_ED, M,
                                            e_win_default=(0.05, 0.45),
                                            a_win_default=(0.45, 0.95))
@@ -428,14 +419,12 @@ def compute_cardiac_metrics_v2(patient_id: str,
         has_A = False
         qc_main.add_warning('INFO', f'{ventricle_name}A波缺失')
 
-    # 心房参数
     i_at_Vmax = int(np.argmax(y_at))
     i_at_Vmin = int(np.argmin(y_at))
     at_Vmax = float(y_at[i_at_Vmax])
     at_Vmin = float(y_at[i_at_Vmin])
     idx_fill = forward_interval(i_vt_ES, i_vt_ED, M)
     
-    # 多策略VpreA定位
     if has_A and i_A is not None:
         at_VpreA = float(y_at[i_A])
         vpreA_strategy = "A_wave_position"
@@ -470,7 +459,6 @@ def compute_cardiac_metrics_v2(patient_id: str,
     at_passive_EF = ((at_Vmax - at_VpreA) / at_Vmax * 100.0) if at_Vmax > 0 else np.nan
     at_active_EF = ((at_VpreA - at_Vmin) / at_VpreA * 100.0) if at_VpreA > 0 else np.nan
     
-    # 心房功能风险标记
     if not np.isnan(at_active_EF):
         if at_active_EF < 15:
             qc_main.add_warning('WARNING', f'{atrium_name}_active_EF极端低: {at_active_EF:.2f}%')
@@ -478,7 +466,6 @@ def compute_cardiac_metrics_v2(patient_id: str,
         else:
             qc_main.add_flag('risk_score', f'{atrium_name}_afib_risk_level', 'NORMAL')
 
-    # 舒张功能检查
     if not np.isnan(vt_E_vel):
         if vt_E_vel < 1.5:
             qc_main.add_warning('WARNING', f'{ventricle_name}E波速度极低: {vt_E_vel:.4f}，严重舒张障碍')
@@ -489,7 +476,6 @@ def compute_cardiac_metrics_v2(patient_id: str,
     if not np.isnan(t_vt_E_pct) and (t_vt_E_pct < 20 or t_vt_E_pct > 50):
         qc_main.add_warning('INFO', f'{ventricle_name}E波时间延迟: {t_vt_E_pct:.1f}%')
 
-    # 更新结果字典
     res.update({
         f"{ventricle_name}_EDV": vt_EDV,
         f"{ventricle_name}_ESV": vt_ESV,
@@ -522,7 +508,7 @@ def compute_cardiac_metrics_v2(patient_id: str,
     return res, qc_main
 
 def export_patient_plots_and_data(patient_dir: str, metrics: Dict, chamber_type: str = "left"):
-    """导出图表和数据（支持左右心）"""
+    """导出图表和数据"""
     os.makedirs(patient_dir, exist_ok=True)
     
     pair = ("LA", "LV") if chamber_type == "left" else ("RA", "RV")
@@ -535,7 +521,6 @@ def export_patient_plots_and_data(patient_dir: str, metrics: Dict, chamber_type:
     d_vt = metrics[f"_d_{vt_name}"]
     idx = metrics["_idx"]
 
-    # 体积曲线
     plt.figure(figsize=(8,5))
     plt.plot(t_pct, y_at, label=at_name)
     plt.plot(t_pct, y_vt, label=vt_name)
@@ -553,7 +538,6 @@ def export_patient_plots_and_data(patient_dir: str, metrics: Dict, chamber_type:
     plt.savefig(os.path.join(patient_dir, f"{chamber_type}_volume_curve.png"), dpi=DPI)
     plt.close()
 
-    # dV/dt曲线
     plt.figure(figsize=(8,5))
     plt.plot(t_pct, d_vt, label=f"dV/dt ({vt_name})")
     plt.plot(t_pct, d_at, label=f"dV/dt ({at_name})")
@@ -570,7 +554,6 @@ def export_patient_plots_and_data(patient_dir: str, metrics: Dict, chamber_type:
     plt.savefig(os.path.join(patient_dir, f"{chamber_type}_dvdt_curve.png"), dpi=DPI)
     plt.close()
 
-    # 曲线数据
     curves_df = pd.DataFrame({
         "t_pct": t_pct,
         at_name: y_at,
@@ -582,93 +565,159 @@ def export_patient_plots_and_data(patient_dir: str, metrics: Dict, chamber_type:
                      index=False, encoding="utf-8-sig")
 
 def load_bsa_table(bsa_path: str) -> Optional[pd.DataFrame]:
-    """加载BSA表"""
+    """
+    加载BSA表并计算BSA值
+    
+    支持的列名:
+    - 患者ID: 影像号, PatientID, CaseID, ID, 编号 等
+    - 身高: high, 身高, height, height_cm (单位: 米)
+    - 体重: weight, 体重 (单位: kg)
+    
+    BSA计算公式: √(身高(m) × 体重(kg) / 3600)
+    """
     if not bsa_path or not os.path.exists(bsa_path):
-        print("未找到BSA文件")
+        print("  ⚠ 未找到BSA文件，跳过指数化")
         return None
     
     try:
         df = pd.read_excel(bsa_path, engine="openpyxl")
-    except:
+        print(f"  ✓ 读取BSA文件成功，包含 {len(df)} 行数据")
+    except Exception as e:
+        print(f"  ✗ 读取BSA文件失败: {e}")
         return None
 
+    print(f"  列名: {list(df.columns)}")
+
+    # 1. 查找患者ID列
     id_col = None
     for c in df.columns:
-        cstr = str(c).strip()
-        if cstr in ["影像号", "PatientID", "CaseID", "ID", "编号"] or "影像" in cstr:
+        cstr = str(c).strip().lower()
+        if cstr in ["影像号", "patientid", "caseid", "id", "编号"] or "影像" in cstr:
             id_col = c
+            print(f"  ✓ 找到患者ID列: {c}")
             break
+    
     if id_col is None:
+        print(f"  ✗ 未找到患者ID列，可用列: {list(df.columns)}")
         return None
 
-    bsa_col = None
-    for cand in ["BSA", "体表面积", "BSA_m2", "bsa"]:
-        if cand in df.columns:
-            bsa_col = cand
+    # 2. 查找身高列（米）
+    height_col = None
+    for c in df.columns:
+        cstr = str(c).strip().lower()
+        if cstr in ["high", "height", "身高", "height_cm"]:
+            height_col = c
+            print(f"  ✓ 找到身高列: {c}")
             break
+    
+    # 3. 查找体重列（kg）
+    weight_col = None
+    for c in df.columns:
+        cstr = str(c).strip().lower()
+        if cstr in ["weight", "体重", "weight_kg"]:
+            weight_col = c
+            print(f"  ✓ 找到体重列: {c}")
+            break
+    
+    if height_col is None or weight_col is None:
+        print(f"  ✗ 缺少身高或体重列")
+        print(f"     可用列: {list(df.columns)}")
+        return None
 
+    # 3. 构建输出
     out = pd.DataFrame()
     out["PatientID"] = df[id_col].apply(canonical_id)
-
-    if bsa_col is not None and df[bsa_col].notna().any():
-        out["BSA_m2"] = pd.to_numeric(df[bsa_col], errors="coerce")
+    
+    # 4. 提取并验证身高（应该是米）
+    height = pd.to_numeric(df[height_col], errors="coerce")
+    weight = pd.to_numeric(df[weight_col], errors="coerce")
+    
+    # 检查身高单位
+    height_median = height.dropna().median()
+    if height_median > 3.0:
+        print(f"  ⚠ 身高中位数 {height_median:.2f} > 3，认为已为厘米，转换为米")
+        height = height / 100.0
+    elif height_median < 0.5:
+        print(f"  ⚠ 身高中位数 {height_median:.4f} < 0.5，数据可能异常")
     else:
-        h_col, w_col = None, None
-        for cand in ["身高", "身高(cm)", "height_cm", "height", "Height"]:
-            if cand in df.columns:
-                h_col = cand
-                break
-        for cand in ["体重", "体重(kg)", "weight", "weight_kg", "Weight"]:
-            if cand in df.columns:
-                w_col = cand
-                break
-        if h_col is None or w_col is None:
-            return None
-
-        height = pd.to_numeric(df[h_col], errors="coerce")
-        weight = pd.to_numeric(df[w_col], errors="coerce")
-        if height.dropna().median() < 3.0:
-            height = height * 100.0
-        if weight.dropna().median() > 300.0:
-            weight = weight / 1000.0
-        out["BSA_m2"] = np.sqrt(height * weight / 3600.0)
-
-    out = out.replace([np.inf, -np.inf], np.nan).dropna(subset=["BSA_m2"])
-    out = out.groupby("PatientID", as_index=False)["BSA_m2"].first()
-    return out
+        print(f"  ✓ 身高中位数 {height_median:.2f}m，单位正确（米）")
+    
+    # 检查体重单位
+    weight_median = weight.dropna().median()
+    if weight_median > 300:
+        print(f"  ⚠ 体重中位数 {weight_median:.1f} > 300，认为是克，转换为kg")
+        weight = weight / 1000.0
+    elif weight_median < 10:
+        print(f"  ⚠ 体重中位数 {weight_median:.1f} < 10，数据可能异常")
+    else:
+        print(f"  ✓ 体重中位数 {weight_median:.1f}kg，单位正确")
+    
+    # 5. 计算BSA
+    # 公式: BSA(m²) = √(height(m) × weight(kg) / 3600)
+    out["BSA_m2"] = np.sqrt(height * weight / 3600.0)
+    
+    # 移除无效行
+    out = out.replace([np.inf, -np.inf], np.nan)
+    out_valid = out.dropna(subset=["BSA_m2"])
+    
+    print(f"  ✓ 成功计算 {len(out_valid)}/{len(out)} 例BSA值")
+    
+    # 去重
+    out_dedup = out_valid.groupby("PatientID", as_index=False)["BSA_m2"].first()
+    
+    return out_dedup
 
 def add_bsa_indexing_generic(res_df: pd.DataFrame, bsa_df: Optional[pd.DataFrame],
-                             vol_map: Dict[str, str]) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """合并BSA并指数化"""
+                             vol_map: Dict[str, str]) -> Tuple[pd.DataFrame, List[str]]:
+    """
+    合并BSA并指数化
+    
+    返回: (指数化后的df, 未匹配的患者列表)
+    """
     if bsa_df is None or bsa_df.empty:
-        return res_df.copy(), pd.DataFrame(columns=["PatientID"])
+        print(f"  ⚠ BSA数据为空，无法指数化")
+        return res_df.copy(), []
     
     df = res_df.copy()
     df["PatientID"] = df["PatientID"].apply(canonical_id)
     bsa_df = bsa_df.copy()
     bsa_df["PatientID"] = bsa_df["PatientID"].apply(canonical_id)
+    
+    # 合并
     merged = df.merge(bsa_df, on="PatientID", how="left", suffixes=("", "_bsa"))
     if "BSA_m2_bsa" in merged.columns:
         merged["BSA_m2"] = merged["BSA_m2_bsa"]
         merged.drop(columns=["BSA_m2_bsa"], inplace=True)
+    
+    # 统计未匹配患者
+    unmatched = merged[merged["BSA_m2"].isna()]["PatientID"].tolist()
+    if unmatched:
+        print(f"  ⚠ {len(unmatched)}例患者未找到BSA数据")
 
+    # 指数化函数
     def idx_div(x, bsa):
         try:
             return x / bsa if (bsa is not None and np.isfinite(bsa) and bsa > 0) else np.nan
         except:
             return np.nan
 
+    # 执行指数化
     for src, dst in vol_map.items():
         if src in merged.columns:
             merged[dst] = [idx_div(v, b) for v, b in zip(merged[src].values, merged["BSA_m2"].values)]
     
-    return merged, unmatched if 'unmatched' in locals() else pd.DataFrame(columns=["PatientID"])
+    return merged, unmatched
 
 # ========== 主程序 ==========
 def main():
+    print("=" * 100)
+    print("心脏功能分析 V2.4 - 完整左右心输出（修复BSA计算）")
+    print("=" * 100)
+    
     if not os.path.exists(INPUT_XLSX):
         raise FileNotFoundError(f"未找到文件：{INPUT_XLSX}")
     
+    print(f"\n读取输入文件: {INPUT_XLSX}")
     df = pd.read_excel(INPUT_XLSX, engine="openpyxl")
     if df.shape[1] < 4:
         raise ValueError("输入表需≥4列")
@@ -677,6 +726,7 @@ def main():
     id_col, label_col = df.columns[0], df.columns[1]
     phase_cols = df.columns[2:]
 
+    # 数据预处理
     records = []
     nrows = df.shape[0]
     if nrows % 4 != 0:
@@ -704,6 +754,7 @@ def main():
     right_results = []
     all_qc_records = []
     
+    print(f"\n处理患者数据...")
     for pid, g in df2.groupby(id_col):
         chamber_vols: Dict[str, np.ndarray] = {}
         for lbl, sub in g.groupby(label_col):
@@ -712,65 +763,85 @@ def main():
             chamber_vols[lbl] = vol.astype(float)
 
         # 左心
-        left_metrics, qc_left = compute_cardiac_metrics_v2(str(pid), chamber_vols, list(phase_cols), chamber_type="left")
-        left_metrics.update(qc_left.to_csv_row())
-        left_results.append({k: v for k, v in left_metrics.items() if not k.startswith("_")})
-        all_qc_records.append({"PatientID": pid, "chamber": "LEFT", **qc_left.to_dict()})
+        if {"LA", "LV"}.issubset(chamber_vols.keys()):
+            left_metrics, qc_left = compute_cardiac_metrics_v2(str(pid), chamber_vols, list(phase_cols), chamber_type="left")
+            left_metrics.update(qc_left.to_csv_row())
+            left_results.append({k: v for k, v in left_metrics.items() if not k.startswith("_")})
+            all_qc_records.append({"PatientID": pid, "chamber": "LEFT", **qc_left.to_dict()})
+            
+            if all(k in left_metrics for k in ["_y_LV", "_y_LA"]):
+                export_patient_plots_and_data(os.path.join(out_dir, safe_dirname(pid)), left_metrics, "left")
         
         # 右心
-        right_metrics, qc_right = compute_cardiac_metrics_v2(str(pid), chamber_vols, list(phase_cols), chamber_type="right")
-        right_metrics.update(qc_right.to_csv_row())
-        right_results.append({k: v for k, v in right_metrics.items() if not k.startswith("_")})
-        all_qc_records.append({"PatientID": pid, "chamber": "RIGHT", **qc_right.to_dict()})
-        
-        # 绘图
-        if all(k in left_metrics for k in ["_y_LV", "_y_LA"]):
-            export_patient_plots_and_data(os.path.join(out_dir, safe_dirname(pid)), left_metrics, "left")
-        if all(k in right_metrics for k in ["_y_RV", "_y_RA"]):
-            export_patient_plots_and_data(os.path.join(out_dir, safe_dirname(pid)), right_metrics, "right")
+        if {"RA", "RV"}.issubset(chamber_vols.keys()):
+            right_metrics, qc_right = compute_cardiac_metrics_v2(str(pid), chamber_vols, list(phase_cols), chamber_type="right")
+            right_metrics.update(qc_right.to_csv_row())
+            right_results.append({k: v for k, v in right_metrics.items() if not k.startswith("_")})
+            all_qc_records.append({"PatientID": pid, "chamber": "RIGHT", **qc_right.to_dict()})
+            
+            if all(k in right_metrics for k in ["_y_RV", "_y_RA"]):
+                export_patient_plots_and_data(os.path.join(out_dir, safe_dirname(pid)), right_metrics, "right")
 
-    # 输出
+    # 生成输出
+    print(f"\n生成输出文件...")
     left_df = pd.DataFrame(left_results)
     right_df = pd.DataFrame(right_results)
+    
+    print(f"\n加载BSA文件...")
     bsa_df = load_bsa_table(BSA_XLSX)
 
-    # 左心指数化
-    left_vol_map = {
-        "LV_EDV": "LVEDVi", "LV_ESV": "LVESVi", "LV_SV": "LVSVi",
-        "LA_Vmax": "LAVmaxi", "LA_VpreA": "LAVpreAi", "LA_Vmin": "LAVmini",
-    }
-    left_idx_df, _ = add_bsa_indexing_generic(left_df, bsa_df, left_vol_map)
-
-    # 右心指数化
-    right_vol_map = {
-        "RV_EDV": "RVEDVi", "RV_ESV": "RVESVi", "RV_SV": "RVSVi",
-        "RA_Vmax": "RAVmaxi", "RA_VpreA": "RAVpreAi", "RA_Vmin": "RAVmini",
-    }
-    right_idx_df, _ = add_bsa_indexing_generic(right_df, bsa_df, right_vol_map)
-
-    # CSV输出
+    # 左心
     left_df.to_csv(os.path.join(out_dir, "left_heart_metrics_v2.csv"),
                    index=False, encoding="utf-8-sig", float_format="%.6f")
+    print(f"  ✓ left_heart_metrics_v2.csv ({len(left_df)}行)")
+    
+    # 右心
     right_df.to_csv(os.path.join(out_dir, "right_heart_metrics_v2.csv"),
                     index=False, encoding="utf-8-sig", float_format="%.6f")
+    print(f"  ✓ right_heart_metrics_v2.csv ({len(right_df)}行)")
     
-    if bsa_df is not None:
+    # 指数化
+    if bsa_df is not None and not bsa_df.empty:
+        print(f"\n生成指数化文件...")
+        
+        # 左心指数化
+        left_vol_map = {
+            "LV_EDV": "LVEDVi", "LV_ESV": "LVESVi", "LV_SV": "LVSVi",
+            "LA_Vmax": "LAVmaxi", "LA_VpreA": "LAVpreAi", "LA_Vmin": "LAVmini",
+        }
+        left_idx_df, left_unmatched = add_bsa_indexing_generic(left_df, bsa_df, left_vol_map)
         left_idx_df.to_csv(os.path.join(out_dir, "left_heart_metrics_indexed_v2.csv"),
                            index=False, encoding="utf-8-sig", float_format="%.6f")
+        print(f"  ✓ left_heart_metrics_indexed_v2.csv ({len(left_idx_df)}行，{left_idx_df['BSA_m2'].notna().sum()}例有BSA值)")
+        
+        # 右心指数化
+        right_vol_map = {
+            "RV_EDV": "RVEDVi", "RV_ESV": "RVESVi", "RV_SV": "RVSVi",
+            "RA_Vmax": "RAVmaxi", "RA_VpreA": "RAVpreAi", "RA_Vmin": "RAVmini",
+        }
+        right_idx_df, right_unmatched = add_bsa_indexing_generic(right_df, bsa_df, right_vol_map)
         right_idx_df.to_csv(os.path.join(out_dir, "right_heart_metrics_indexed_v2.csv"),
                             index=False, encoding="utf-8-sig", float_format="%.6f")
+        print(f"  ✓ right_heart_metrics_indexed_v2.csv ({len(right_idx_df)}行，{right_idx_df['BSA_m2'].notna().sum()}例有BSA值)")
+    else:
+        print(f"  ⚠ BSA数据无效，跳过指数化")
 
     # QC报告
     with open(os.path.join(out_dir, "quality_control_report_v2.json"), "w", encoding="utf-8") as f:
         json.dump(all_qc_records, f, ensure_ascii=False, indent=2)
+    print(f"  ✓ quality_control_report_v2.json ({len(all_qc_records)}条记录)")
     
+    # 四腔完整性
     qc_counts.to_csv(os.path.join(out_dir, "chamber_completeness_qc.csv"),
                      index=False, encoding="utf-8-sig")
+    print(f"  ✓ chamber_completeness_qc.csv ({len(qc_counts)}行)")
 
-    print(f"完成！左心{left_df.shape[0]}例 + 右心{right_df.shape[0]}例")
-    print(f"输出位置：{out_dir}")
-    if bsa_df is not None:
-        print(f"BSA指数化：{left_idx_df['BSA_m2'].notna().sum()}例")
+    print(f"\n" + "=" * 100)
+    print(f"完成！")
+    print(f"  左心: {len(left_df)}例")
+    print(f"  右心: {len(right_df)}例")
+    print(f"  输出位置: {out_dir}")
+    print("=" * 100)
 
 if __name__ == "__main__":
     main()
