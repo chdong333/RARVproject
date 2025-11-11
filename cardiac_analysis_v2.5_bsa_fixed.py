@@ -1,16 +1,27 @@
 # -*- coding: utf-8 -*-
 """
-右/左心系统功能指标（CT 多期体积 → 拟合曲线）- 改进版V2.4 (修复BSA计算)
+右/左心系统功能指标（CT 多期体积 → 拟合曲线）- 改进版V2.5 (修复BSA计算单位错误)
 
-改进内容（相比V2.3）:
-- ✅ 修复BSA文件列名识别（"high" → 身高米, "weight" → 体重kg）
-- ✅ 修复BSA计算公式（身高已为米，不需转换）
-- ✅ 确保indexed文件正常输出
-- ✅ 增强BSA列名匹配
+关键修复（相比V2.4）:
+- ✅ 修复BSA计算公式：身高必须转换为厘米！
+- ✅ 确保指数化值在正常范围内
+- ✅ BSA计算正确：√(height_cm × weight_kg / 3600)
 
-BSA计算公式:
-  BSA(m²) = √(身高(m) × 体重(kg) / 3600)
+V2.4的错误分析:
+  V2.4代码使用了错误的BSA公式:
+  BSA = √(height(m) × weight(kg) / 3600) ❌
   
+  导致:
+  - BSA值太小（0.21 instead of 2.08）
+  - 指数化值放大10倍（LVEDVi 从60变成600）
+  
+V2.5修复:
+  BSA = √(height(cm) × weight(kg) / 3600) ✅
+  
+  正确的转换:
+  - 身高: 1.73 m → 173 cm
+  - 计算: √(173 × 90 / 3600) = 2.08 m²
+
 V2.3继承的功能：
 - ✅ 周期样条边界修复
 - ✅ 动态E/A窗口调整
@@ -21,8 +32,8 @@ V2.3继承的功能：
 输出文件:
 - left_heart_metrics_v2.csv
 - right_heart_metrics_v2.csv
-- left_heart_metrics_indexed_v2.csv ✅ 完全修复
-- right_heart_metrics_indexed_v2.csv ✅ 完全修复
+- left_heart_metrics_indexed_v2.csv ✅ 修复
+- right_heart_metrics_indexed_v2.csv ✅ 修复
 - quality_control_report_v2.json
 - chamber_completeness_qc.csv
 """
@@ -566,14 +577,17 @@ def export_patient_plots_and_data(patient_dir: str, metrics: Dict, chamber_type:
 
 def load_bsa_table(bsa_path: str) -> Optional[pd.DataFrame]:
     """
-    加载BSA表并计算BSA值
+    加载BSA表并计算BSA值 - V2.5修复版
     
     支持的列名:
     - 患者ID: 影像号, PatientID, CaseID, ID, 编号 等
-    - 身高: high, 身高, height, height_cm (单位: 米)
+    - 身高: high, 身高, height, height_cm (单位: 米 m)
     - 体重: weight, 体重 (单位: kg)
     
-    BSA计算公式: √(身高(m) × 体重(kg) / 3600)
+    BSA计算公式 (DuBois/Mosteller): 
+    BSA(m²) = √(身高(cm) × 体重(kg) / 3600)
+    
+    V2.5修复: 必须将身高从米转换为厘米！
     """
     if not bsa_path or not os.path.exists(bsa_path):
         print("  ⚠ 未找到BSA文件，跳过指数化")
@@ -628,19 +642,21 @@ def load_bsa_table(bsa_path: str) -> Optional[pd.DataFrame]:
     out = pd.DataFrame()
     out["PatientID"] = df[id_col].apply(canonical_id)
     
-    # 4. 提取并验证身高（应该是米）
+    # 4. 提取身高和体重
     height = pd.to_numeric(df[height_col], errors="coerce")
     weight = pd.to_numeric(df[weight_col], errors="coerce")
     
-    # 检查身高单位
+    # 检查身高单位并转换为厘米
     height_median = height.dropna().median()
     if height_median > 3.0:
-        print(f"  ⚠ 身高中位数 {height_median:.2f} > 3，认为已为厘米，转换为米")
-        height = height / 100.0
+        print(f"  ⚠ 身高中位数 {height_median:.2f} > 3，认为已为厘米，不再转换")
+        height_cm = height
     elif height_median < 0.5:
-        print(f"  ⚠ 身高中位数 {height_median:.4f} < 0.5，数据可能异常")
+        print(f"  ✗ 身高中位数 {height_median:.4f} < 0.5，数据异常")
+        return None
     else:
-        print(f"  ✓ 身高中位数 {height_median:.2f}m，单位正确（米）")
+        print(f"  ✓ 身高中位数 {height_median:.2f}m，需要转换为cm")
+        height_cm = height * 100  # ✅ 修复：身高从米转为厘米
     
     # 检查体重单位
     weight_median = weight.dropna().median()
@@ -648,19 +664,33 @@ def load_bsa_table(bsa_path: str) -> Optional[pd.DataFrame]:
         print(f"  ⚠ 体重中位数 {weight_median:.1f} > 300，认为是克，转换为kg")
         weight = weight / 1000.0
     elif weight_median < 10:
-        print(f"  ⚠ 体重中位数 {weight_median:.1f} < 10，数据可能异常")
+        print(f"  ✗ 体重中位数 {weight_median:.1f} < 10，数据异常")
+        return None
     else:
         print(f"  ✓ 体重中位数 {weight_median:.1f}kg，单位正确")
     
-    # 5. 计算BSA
-    # 公式: BSA(m²) = √(height(m) × weight(kg) / 3600)
-    out["BSA_m2"] = np.sqrt(height * weight / 3600.0)
+    # 5. 计算BSA（修复版本 - 身高必须是cm！）
+    # 公式: BSA(m²) = √(height(cm) × weight(kg) / 3600)
+    print(f"\n  【BSA计算】")
+    print(f"  公式: BSA = √(身高(cm) × 体重(kg) / 3600)")
+    out["BSA_m2"] = np.sqrt(height_cm * weight / 3600.0)
     
     # 移除无效行
     out = out.replace([np.inf, -np.inf], np.nan)
     out_valid = out.dropna(subset=["BSA_m2"])
     
-    print(f"  ✓ 成功计算 {len(out_valid)}/{len(out)} 例BSA值")
+    print(f"  成功计算 {len(out_valid)}/{len(out)} 例BSA值")
+    
+    # 验证BSA值范围
+    bsa_min = out_valid["BSA_m2"].min()
+    bsa_max = out_valid["BSA_m2"].max()
+    bsa_mean = out_valid["BSA_m2"].mean()
+    
+    if bsa_min < 1.0 or bsa_max > 3.0 or bsa_mean < 1.5:
+        print(f"  ⚠ BSA值范围: {bsa_min:.2f} - {bsa_max:.2f} m² (平均 {bsa_mean:.2f})")
+        print(f"  ⚠ 可能仍有问题！正常范围应为 1.2-2.5 m²")
+    else:
+        print(f"  ✓ BSA值范围: {bsa_min:.2f} - {bsa_max:.2f} m² (平均 {bsa_mean:.2f})")
     
     # 去重
     out_dedup = out_valid.groupby("PatientID", as_index=False)["BSA_m2"].first()
@@ -711,7 +741,7 @@ def add_bsa_indexing_generic(res_df: pd.DataFrame, bsa_df: Optional[pd.DataFrame
 # ========== 主程序 ==========
 def main():
     print("=" * 100)
-    print("心脏功能分析 V2.4 - 完整左右心输出（修复BSA计算）")
+    print("心脏功能分析 V2.5 - 完整左右心输出（修复BSA计算单位）")
     print("=" * 100)
     
     if not os.path.exists(INPUT_XLSX):
@@ -823,6 +853,13 @@ def main():
         right_idx_df.to_csv(os.path.join(out_dir, "right_heart_metrics_indexed_v2.csv"),
                             index=False, encoding="utf-8-sig", float_format="%.6f")
         print(f"  ✓ right_heart_metrics_indexed_v2.csv ({len(right_idx_df)}行，{right_idx_df['BSA_m2'].notna().sum()}例有BSA值)")
+        
+        # 验证指数化值范围
+        print(f"\n【指数化值验证】")
+        print(f"  LVEDVi范围: {left_idx_df['LVEDVi'].min():.1f} - {left_idx_df['LVEDVi'].max():.1f} mL/m²")
+        print(f"  正常范围应为: 50-90 mL/m²")
+        print(f"  RVEDVi范围: {right_idx_df['RVEDVi'].min():.1f} - {right_idx_df['RVEDVi'].max():.1f} mL/m²")
+        print(f"  正常范围应为: 60-100 mL/m²")
     else:
         print(f"  ⚠ BSA数据无效，跳过指数化")
 
