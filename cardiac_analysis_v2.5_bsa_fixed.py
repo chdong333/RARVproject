@@ -1,41 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-右/左心系统功能指标（CT 多期体积 → 拟合曲线）- 改进版V2.5 (修复BSA计算单位错误)
 
-关键修复（相比V2.4）:
-- ✅ 修复BSA计算公式：身高必须转换为厘米！
-- ✅ 确保指数化值在正常范围内
-- ✅ BSA计算正确：√(height_cm × weight_kg / 3600)
 
-V2.4的错误分析:
-  V2.4代码使用了错误的BSA公式:
-  BSA = √(height(m) × weight(kg) / 3600) ❌
-  
-  导致:
-  - BSA值太小（0.21 instead of 2.08）
-  - 指数化值放大10倍（LVEDVi 从60变成600）
-  
-V2.5修复:
-  BSA = √(height(cm) × weight(kg) / 3600) ✅
-  
-  正确的转换:
-  - 身高: 1.73 m → 173 cm
-  - 计算: √(173 × 90 / 3600) = 2.08 m²
 
-V2.3继承的功能：
-- ✅ 周期样条边界修复
-- ✅ 动态E/A窗口调整
-- ✅ 多策略VpreA定位
-- ✅ 完整的左右心功能计算
-- ✅ 统一的QC质量控制系统
-
-输出文件:
-- left_heart_metrics_v2.csv
-- right_heart_metrics_v2.csv
-- left_heart_metrics_indexed_v2.csv ✅ 修复
-- right_heart_metrics_indexed_v2.csv ✅ 修复
-- quality_control_report_v2.json
-- chamber_completeness_qc.csv
 """
 
 import os, re, json
